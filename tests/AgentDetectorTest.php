@@ -24,6 +24,8 @@ beforeEach(function (): void {
         'REPL_ID',
         'ANTIGRAVITY_AGENT',
         'PI_CODING_AGENT',
+        'CLAUDE_CODE_SESSION_ID',
+        'KIRO_AGENT_PATH',
     ] as $var) {
         putenv($var);
     }
@@ -48,6 +50,8 @@ afterEach(function (): void {
         'REPL_ID',
         'ANTIGRAVITY_AGENT',
         'PI_CODING_AGENT',
+        'CLAUDE_CODE_SESSION_ID',
+        'KIRO_AGENT_PATH',
     ] as $var) {
         putenv($var);
     }
@@ -214,6 +218,16 @@ it('detects pi via PI_CODING_AGENT', function (): void {
         ->and($result->knownAgent())->toBe(KnownAgent::Pi);
 });
 
+it('detects kiro-cli via KIRO_AGENT_PATH', function (): void {
+    putenv('KIRO_AGENT_PATH=/usr/local/bin/kiro-cli');
+
+    $result = AgentDetector::detect();
+
+    expect($result->isAgent)->toBeTrue()
+        ->and($result->name)->toBe('kiro-cli')
+        ->and($result->knownAgent())->toBe(KnownAgent::KiroCli);
+});
+
 // Devin detection via file_exists mock
 it('detects devin via /opt/.devin file', function (): void {
     $GLOBALS['__mock_file_exists'] = fn (string $path): bool => $path === '/opt/.devin';
@@ -330,6 +344,7 @@ it('returns correct enum for known agents', function (string $envVar, string $en
     'replit' => ['REPL_ID', 'id', KnownAgent::Replit],
     'antigravity' => ['ANTIGRAVITY_AGENT', '1', KnownAgent::Antigravity],
     'pi' => ['PI_CODING_AGENT', 'true', KnownAgent::Pi],
+    'kiro-cli' => ['KIRO_AGENT_PATH', '/usr/local/bin/kiro-cli', KnownAgent::KiroCli],
 ]);
 
 it('returns null knownAgent for custom agent', function (): void {
@@ -358,4 +373,118 @@ it('returns false isAgent when no agent detected', function (): void {
 
     expect($result->isAgent)->toBeFalse()
         ->and($result->knownAgent())->toBeNull();
+});
+
+// Session ID extraction
+it('extracts CODEX_THREAD_ID as sessionId when codex detected via CODEX_SANDBOX', function (): void {
+    putenv('CODEX_SANDBOX=true');
+    putenv('CODEX_THREAD_ID=thread-abc123');
+
+    $result = AgentDetector::detect();
+
+    expect($result->sessionId)->toBe('thread-abc123');
+});
+
+it('extracts CODEX_THREAD_ID as sessionId when codex detected via CODEX_THREAD_ID', function (): void {
+    putenv('CODEX_THREAD_ID=thread-xyz');
+
+    $result = AgentDetector::detect();
+
+    expect($result->sessionId)->toBe('thread-xyz');
+});
+
+it('extracts AMP_CURRENT_THREAD_ID as sessionId when amp detected', function (): void {
+    putenv('AMP_CURRENT_THREAD_ID=amp-session-456');
+
+    $result = AgentDetector::detect();
+
+    expect($result->sessionId)->toBe('amp-session-456');
+});
+
+it('returns null sessionId for agents without a session env var', function (): void {
+    putenv('CURSOR_AGENT=1');
+
+    $result = AgentDetector::detect();
+
+    expect($result->sessionId)->toBeNull();
+});
+
+it('returns null sessionId for claude when CLAUDE_CODE_SESSION_ID is not set', function (): void {
+    putenv('CLAUDECODE=1');
+
+    $result = AgentDetector::detect();
+
+    expect($result->sessionId)->toBeNull();
+});
+
+it('extracts CLAUDE_CODE_SESSION_ID as sessionId when set', function (): void {
+    putenv('CLAUDECODE=1');
+    putenv('CLAUDE_CODE_SESSION_ID=claude-sess-789');
+
+    $result = AgentDetector::detect();
+
+    expect($result->sessionId)->toBe('claude-sess-789');
+});
+
+it('sessionId is null when no agent detected', function (): void {
+    $GLOBALS['__mock_file_exists'] = fn (string $path): bool => false;
+
+    $result = AgentDetector::detect();
+
+    expect($result->sessionId)->toBeNull();
+});
+
+// KnownAgent::displayName()
+it('returns correct display names for all known agents', function (KnownAgent $agent, string $expected): void {
+    expect($agent->displayName())->toBe($expected);
+})->with([
+    'cursor'      => [KnownAgent::Cursor,      'Cursor'],
+    'claude'      => [KnownAgent::Claude,      'Claude Code'],
+    'devin'       => [KnownAgent::Devin,       'Devin'],
+    'replit'      => [KnownAgent::Replit,      'Replit'],
+    'gemini'      => [KnownAgent::Gemini,      'Gemini CLI'],
+    'codex'       => [KnownAgent::Codex,       'Codex'],
+    'augment-cli' => [KnownAgent::AugmentCli,  'Augment CLI'],
+    'opencode'    => [KnownAgent::Opencode,     'OpenCode'],
+    'amp'         => [KnownAgent::Amp,          'Amp'],
+    'copilot'     => [KnownAgent::Copilot,      'GitHub Copilot'],
+    'antigravity' => [KnownAgent::Antigravity,  'Antigravity'],
+    'pi'          => [KnownAgent::Pi,           'Pi'],
+    'kiro-cli'    => [KnownAgent::KiroCli,       'Kiro CLI'],
+]);
+
+// AgentResult serialization compatibility
+it('unserializes a pre-sessionId payload without erroring', function (): void {
+    // Serialized form of an AgentResult from before the sessionId field existed
+    // (default property-based serialization with only isAgent + name).
+    $legacyPayload = 'O:25:"AgentDetector\AgentResult":2:{s:7:"isAgent";b:1;s:4:"name";s:5:"codex";}';
+
+    $result = unserialize($legacyPayload);
+
+    expect($result)->toBeInstanceOf(\AgentDetector\AgentResult::class)
+        ->and($result->isAgent)->toBeTrue()
+        ->and($result->name)->toBe('codex')
+        ->and($result->sessionId)->toBeNull();
+});
+
+it('round-trips serialize/unserialize with sessionId set', function (): void {
+    $original = new \AgentDetector\AgentResult(true, 'codex', 'thread-abc');
+
+    $restored = unserialize(serialize($original));
+
+    expect($restored->isAgent)->toBeTrue()
+        ->and($restored->name)->toBe('codex')
+        ->and($restored->sessionId)->toBe('thread-abc');
+});
+
+it('excludes sessionId from default JSON encoding', function (): void {
+    $result = new \AgentDetector\AgentResult(true, 'codex', 'thread-abc');
+
+    expect(json_encode($result))->toBe('{"isAgent":true,"name":"codex"}');
+});
+
+it('json-encodes a null-agent result without sessionId', function (): void {
+    $result = new \AgentDetector\AgentResult(false);
+
+    expect(json_encode($result))->toBe('{"isAgent":false,"name":null}');
 });

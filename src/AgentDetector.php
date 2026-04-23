@@ -26,12 +26,20 @@ final class AgentDetector
             'copilot' => ['COPILOT_CLI'],
             'antigravity' => ['ANTIGRAVITY_AGENT'],
             'pi' => ['PI_CODING_AGENT'],
+            'kiro-cli' => ['KIRO_AGENT_PATH'],
         ];
 
         foreach ($agentsWithEnvVars as $agent => $envVars) {
             foreach ($envVars as $envVar) {
                 if (getenv($envVar) !== false) {
-                    return new AgentResult(true, $agent);
+                    $sessionId = match ($agent) {
+                        'codex'  => (getenv('CODEX_THREAD_ID') ?: null),
+                        'amp'    => (getenv('AMP_CURRENT_THREAD_ID') ?: null),
+                        'claude' => (getenv('CLAUDE_CODE_SESSION_ID') ?: null),
+                        default  => null,
+                    };
+
+                    return new AgentResult(true, $agent, $sessionId);
                 }
             }
         }
